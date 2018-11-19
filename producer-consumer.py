@@ -9,16 +9,24 @@ import random
 # Global variables
 outputDir = 'frames'
 clipFileName = 'dog.mp4'
+clipFileName = 'clip.mp4'
+
+# Queues to keep track of the frame
 queue1 = []
 queue2 = []
+
+# Conditions to avoid dreadlock
 condition1 = Condition()
 condition2 = Condition()
+
+# Max number of frames at a time in the queue
 MAX_NUM = 10
 
-# Threads
+# Thread that deals with extracting the frames from the video
 class ExtractThread(Thread):
     def run(self):
         global queue1
+
         # open the video clip
         vidcap = cv2.VideoCapture(clipFileName)
 
@@ -35,8 +43,11 @@ class ExtractThread(Thread):
 
         print("Reading frame {} {} ".format(count, success))
 
+        # While there are frames to read
         while success:
             condition1.acquire()
+
+            # If queue is full make thread wait
             if len(queue1) == MAX_NUM:
                 print("Queue 1 full, extracting frames is paused")
                 condition1.wait()
@@ -44,29 +55,37 @@ class ExtractThread(Thread):
             cv2.imwrite("{}/frame_{:04d}.jpg".format(outputDir, count), image)
             success,image = vidcap.read()
             print('Reading frame {}'.format(count))
+
+            # add count to queue
             queue1.append(count)
             count += 1
             condition1.notify()
             condition1.release()
-            #time.sleep(random.random())
+
+        # Add -1 to queue to let the next step know that the extracting process is done
         queue1.append(-1)
         print("ExtractThread ends")
 
-
-
+# Thread that deals with converting frames to grayscale
 class ConvertThread(Thread):
     def run(self):
         global queue1
         global queue2
         while True:
             condition1.acquire()
+
+            # if queue is empty wait for producer
             if not queue1:
                 print('Nothing in queue 1')
                 condition1.wait()
+
+            # get next frame in queue
             count = queue1.pop(0)
 
+            # if ExtractThread is done finish thread
             if count == -1:
                 break
+
             # get the next frame file name
             inFileName = "{}/frame_{:04d}.jpg".format(outputDir, count)
 
@@ -95,16 +114,21 @@ class ConvertThread(Thread):
 
             condition2.acquire()
 
+            # Use second queue to keep track of the frames that have been processed
             if len(queue2) == MAX_NUM:
                 print("Queue 2 full, extracting frames is paused")
                 condition2.wait()
+
+            # add processed frame to queue
             queue2.append(count)
             condition2.notify()
             condition2.release()
-            #time.sleep(random.random())
+
+        # Add -1 to thread to let know next step that the processing of the frames is over
         queue2.append(-1)
         print("ConvertThread ends")
 
+# Thread that deals with displaying frames
 class DisplayThread(Thread):
     def run(self):
         global queue2
@@ -113,9 +137,13 @@ class DisplayThread(Thread):
 
         while True:
             condition2.acquire()
+
+            # If there is nothing in the second queue wait
             if not queue2:
                 print('Nothing in queue 2')
                 condition2.wait()
+
+            # get next frame 
             count = queue2.pop(0)
 
             if count == -1:
