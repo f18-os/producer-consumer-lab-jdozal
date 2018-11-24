@@ -1,5 +1,6 @@
 #!/usr/bin/python3
-from threading import Thread, Condition
+from threading import Thread, Semaphore
+from queue import Queue
 import cv2
 import os
 import time
@@ -8,16 +9,17 @@ import random
 
 # Global variables
 outputDir = 'frames'
-clipFileName = 'dog.mp4'
+#clipFileName = 'dog.mp4'
 clipFileName = 'clip.mp4'
 
 # Queues to keep track of the frame
 queue1 = []
+#queue1 = Queue(10)
 queue2 = []
 
-# Conditions to avoid dreadlock
-condition1 = Condition()
-condition2 = Condition()
+# Semaphores to avoid dreadlock
+semaphore1 = Semaphore(1)
+semaphore2 = Semaphore(1)
 
 # Max number of frames at a time in the queue
 MAX_NUM = 10
@@ -26,7 +28,6 @@ MAX_NUM = 10
 class ExtractThread(Thread):
     def run(self):
         global queue1
-
         # open the video clip
         vidcap = cv2.VideoCapture(clipFileName)
 
@@ -45,12 +46,18 @@ class ExtractThread(Thread):
 
         # While there are frames to read
         while success:
-            condition1.acquire()
+            # Acquiring semaphore
+            semaphore1.acquire()
+            print("After aquiring semaphore1")
 
             # If queue is full make thread wait
             if len(queue1) == MAX_NUM:
                 print("Queue 1 full, extracting frames is paused")
-                condition1.wait()
+                # release semaphore and continue next iteration of loop
+                semaphore1.release()
+                time.sleep(0.01)
+                continue
+
             # write the current frame out as a jpeg image
             cv2.imwrite("{}/frame_{:04d}.jpg".format(outputDir, count), image)
             success,image = vidcap.read()
@@ -58,12 +65,13 @@ class ExtractThread(Thread):
 
             # add count to queue
             queue1.append(count)
+
             count += 1
-            condition1.notify()
-            condition1.release()
+            semaphore1.release()
 
         # Add -1 to queue to let the next step know that the extracting process is done
         queue1.append(-1)
+        #queue1.task_done()
         print("ExtractThread ends")
 
 # Thread that deals with converting frames to grayscale
@@ -71,19 +79,22 @@ class ConvertThread(Thread):
     def run(self):
         global queue1
         global queue2
-        while True:
-            condition1.acquire()
 
+        while True:
+            semaphore1.acquire()
             # if queue is empty wait for producer
             if not queue1:
                 print('Nothing in queue 1')
-                condition1.wait()
+                semaphore1.release()
+                time.sleep(0.01)
+                continue
 
             # get next frame in queue
             count = queue1.pop(0)
 
             # if ExtractThread is done finish thread
             if count == -1:
+                semaphore2.release()
                 break
 
             # get the next frame file name
@@ -109,20 +120,19 @@ class ConvertThread(Thread):
             # load the next frame
             inputFrame = cv2.imread(inFileName, cv2.IMREAD_COLOR)
 
-            condition1.notify()
-            condition1.release()
 
-            condition2.acquire()
+            semaphore1.release()
+            semaphore2.acquire()
 
             # Use second queue to keep track of the frames that have been processed
             if len(queue2) == MAX_NUM:
                 print("Queue 2 full, extracting frames is paused")
-                condition2.wait()
+                semaphore2.release()
+                continue
 
             # add processed frame to queue
             queue2.append(count)
-            condition2.notify()
-            condition2.release()
+            semaphore2.release()
 
         # Add -1 to thread to let know next step that the processing of the frames is over
         queue2.append(-1)
@@ -136,17 +146,20 @@ class DisplayThread(Thread):
         startTime = time.time()
 
         while True:
-            condition2.acquire()
+            semaphore2.acquire()
 
             # If there is nothing in the second queue wait
             if not queue2:
                 print('Nothing in queue 2')
-                condition2.wait()
+                semaphore2.release()
+                time.sleep(0.01)
+                continue
 
-            # get next frame 
+            # get next frame
             count = queue2.pop(0)
 
             if count == -1:
+                semaphore2.release()
                 break
 
             # Generate the filename for the first frame
@@ -175,9 +188,7 @@ class DisplayThread(Thread):
             # get the start time for processing the next frame
             startTime = time.time()
 
-            condition2.notify()
-            condition2.release()
-            #time.sleep(random.random())
+            semaphore2.release()
         cv2.destroyAllWindows()
 
 ExtractThread().start()
